@@ -1,2 +1,2 @@
-worker: python init_db_postgres.py
+worker: python bot.py
 
