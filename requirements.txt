@@ -1,0 +1,6 @@
+python-telegram-bot==20.6
+openai==1.23.2
+python-dotenv
+fuzzywuzzy
+python-Levenshtein
+psycopg2-binary
