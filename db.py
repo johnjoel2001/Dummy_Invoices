@@ -828,7 +828,7 @@ def get_pending_orders_with_items():
             "company": company,
             "amount": amount,
             "paid_amount": paid,
-            "order_date": order_date.strftime('%Y-%m-%d'),
+            "order_date": order_date.strftime('%Y-%m-%d') if hasattr(order_date, "strftime") else str(order_date).split(" ")[0],
             "items": items,
             "shipping_fee": shipping_fee if shipping_fee > 0 else None
         })
@@ -855,8 +855,8 @@ def get_all_orders_with_items():
             "company": company,
             "amount": amount,
             "paid_amount": paid,
-            "order_date": order_date.strftime('%Y-%m-%d'),
-            "payment_date": payment_date.strftime('%Y-%m-%d') if payment_date else None,
+            "order_date": order_date.strftime('%Y-%m-%d') if hasattr(order_date, "strftime") else str(order_date).split(" ")[0],
+            "payment_date": payment_date.strftime('%Y-%m-%d') if payment_date and hasattr(payment_date, "strftime") else (str(payment_date).split(" ")[0] if payment_date else None),
             "items": items,
             "shipping_fee": shipping_fee if shipping_fee > 0 else None
         })
