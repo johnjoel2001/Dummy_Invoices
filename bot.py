@@ -1,4 +1,3 @@
-
 import os
 from dotenv import load_dotenv
 from telegram import Update
@@ -9,9 +8,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-
 from fuzzywuzzy import fuzz
-
 from db import (
     init_db,
     add_order,
@@ -28,7 +25,6 @@ from db import (
     delete_order_by_id,
     get_all_orders_with_items,
 )
-
 from gpt_parser import extract_order_info, extract_payment_info
 
 load_dotenv()
@@ -53,8 +49,8 @@ def fuzzy_match_company(input_name):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     user_id = update.effective_user.id
+    print(f"📨 Received message: {text} from user {user_id}")
 
-    # Delete invoice (case-insensitive)
     if text.lower().startswith("delete invoice"):
         try:
             serial = int(text.lower().split("delete invoice")[1].strip())
@@ -67,7 +63,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Usage: delete invoice 2")
         return
 
-    # Invoice selection for payment
     if user_id in user_payment_context and text.lower().startswith("invoice"):
         try:
             selected = int(text.lower().split("invoice")[1].strip()) - 1
@@ -75,7 +70,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             invoice = info["invoices"][selected]
             order_id = invoice[0]
             amount = info["amount"]
-
             result = apply_partial_to_invoice(order_id, amount)
             await update.message.reply_text(result)
             del user_payment_context[user_id]
@@ -83,7 +77,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Invalid invoice number.")
         return
 
-    # Shipping charges confirmation
     if user_id in user_shipping_context:
         order_id = user_shipping_context[user_id]["order_id"]
         total_qty = user_shipping_context[user_id]["total_qty"]
@@ -99,7 +92,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         del user_shipping_context[user_id]
         return
 
-    # Delete shipping fee
     if text.lower().startswith("delete shipping fee for"):
         name = text.lower().split("delete shipping fee for")[1].strip()
         company = fuzzy_match_company(name)
@@ -138,28 +130,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Invalid invoice number.")
         return
 
-    # Handle order
     if "ordered" in text.lower():
         data = extract_order_info(text)
         if data and "company" in data and "orders" in data:
-            amount, order_id, total_qty = add_order(data["company"], data["orders"])
-            order_lines = "\n".join(
-                [f"{o['description'].title()} - {o['quantity']} pairs @ ₹{o['rate']} = ₹{round(o['quantity'] * o['rate'], 2)}"
-                 for o in data["orders"]]
-            )
-            await update.message.reply_text(
-                f"✅ Order saved for {data['company'].title()}:\n{order_lines}\n\nTotal = ₹{amount}"
-            )
-            user_shipping_context[user_id] = {
-                "order_id": order_id,
-                "total_qty": total_qty
-            }
-            await update.message.reply_text("Do you want to add shipping charges? (yes/no)")
+            try:
+                amount, order_id, total_qty = add_order(data["company"], data["orders"])
+                order_lines = "\n".join(
+                    [f"{o['description'].title()} - {o['quantity']} pairs @ ₹{o['rate']} = ₹{round(o['quantity'] * o['rate'], 2)}"
+                    for o in data["orders"]]
+                )
+                await update.message.reply_text(
+                    f"✅ Order saved for {data['company'].title()}:\n{order_lines}\n\nTotal = ₹{amount}"
+                )
+                user_shipping_context[user_id] = {
+                    "order_id": order_id,
+                    "total_qty": total_qty
+                }
+                await update.message.reply_text("Do you want to add shipping charges? (yes/no)")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Error saving order: {e}")
         else:
             await update.message.reply_text("❌ Couldn't understand the order message.")
         return
 
-    # Handle payment
     if "paid" in text.lower():
         data = extract_payment_info(text)
         if data:
@@ -172,19 +165,46 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if isinstance(result, str):
                 await update.message.reply_text(result)
             elif isinstance(result, dict) and result.get("multiple"):
-                user_payment_context[user_id] = result
                 invoices = result["invoices"]
-                reply = f"🔸 {company.title()} has multiple unpaid invoices:\n"
-                for i, inv in enumerate(invoices, start=1):
-                    order_id, paid, total = inv
-                    reply += f"{i}) Invoice #{order_id}: Paid ₹{paid} / ₹{total}, Balance ₹{round(total - paid, 2)}\n"
-                reply += "\nPlease reply with `invoice <number>` to apply the ₹{} payment.".format(data["amount"])
-                await update.message.reply_text(reply)
+
+                for invoice in invoices:
+                    if len(invoice) < 4:
+                        await update.message.reply_text("❌ Internal error: invoice data incomplete.")
+                        return
+
+                sorted_invoices = sorted(invoices, key=lambda x: (x[3], x[0]))
+                oldest_invoice = sorted_invoices[0]
+
+                order_id = oldest_invoice[0]
+                paid_so_far = oldest_invoice[1]
+                total_amount = oldest_invoice[2]
+                order_date = str(oldest_invoice[3]).split(" ")[0]
+                amount = result["amount"]
+
+                applied_result = apply_partial_to_invoice(order_id, amount)
+
+                balance = round(total_amount - paid_so_far - amount, 2)
+                summary = (
+                    f"📌 Multiple unpaid invoices found. Payment of ₹{amount} applied to the oldest one:\n"
+                    f"🧾 Invoice #{order_id} — Total: ₹{total_amount:.2f} | "
+                    f"Paid: ₹{paid_so_far + amount:.2f} | Balance: ₹{balance:.2f} | Date: {order_date}"
+                )
+                summary += f"\n{applied_result}"
+
+                remaining_invoices = [inv for inv in sorted_invoices if inv[0] != order_id]
+                if remaining_invoices:
+                    summary += "\n\n📋 Other unpaid invoices:\n"
+                    for inv in remaining_invoices:
+                        oid, paid, total, date = inv
+                        bal = round(total - paid, 2)
+                        clean_date = str(date).split(" ")[0]
+                        summary += f"• Invoice #{oid} — Total: ₹{total:.2f} | Paid: ₹{paid:.2f} | Balance: ₹{bal:.2f} | Date: {clean_date}\n"
+
+                await update.message.reply_text(summary)
         else:
             await update.message.reply_text("❌ Couldn't understand the payment message.")
         return
 
-    # Fallback
     await update.message.reply_text("🤖 Please enter a valid order, payment, or command.")
 
 async def invoices(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -197,15 +217,15 @@ async def invoices(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for idx, order in enumerate(orders, start=1):
         balance = round(order["amount"] - order["paid_amount"], 2)
         status = "✅ Paid" if balance == 0 else f"❌ Pending ₹{balance}"
+        order_date = str(order["order_date"]).split(" ")[0]
 
         msg += (
             f"*{idx}) {order['company'].title()}*\n"
             f"🧾 Total: ₹{order['amount']} | Paid: ₹{order['paid_amount']} | {status}\n"
-            f"📅 Order Date: {order['order_date']}\n"
-        ) 
-        # Show payment date only if any amount is paid
+            f"📅 Order Date: {order_date}\n"
+        )
         if order["paid_amount"] > 0 and "payment_date" in order:
-            payment_date = order["payment_date"].split(" ")[0]
+            payment_date = str(order["payment_date"]).split(" ")[0]
             msg += f"💳 Payment Date: {payment_date}\n"
 
         for desc, qty, rate in order["items"]:
@@ -228,11 +248,12 @@ async def pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = "📌 *Pending Payments:*\n\n"
     for idx, order in enumerate(orders, start=1):
         balance = round(order["amount"] - order["paid_amount"], 2)
+        order_date = str(order["order_date"]).split(" ")[0]
 
         msg += (
             f"*{idx}) {order['company'].title()}*\n"
             f"🧾 Total: ₹{order['amount']} | Paid: ₹{order['paid_amount']} | Balance: ₹{balance}\n"
-            f"📅 Order Date: {order['order_date']}\n"
+            f"📅 Order Date: {order_date}\n"
         )
 
         for desc, qty, rate in order["items"]:
